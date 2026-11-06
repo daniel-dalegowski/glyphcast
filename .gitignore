@@ -1,0 +1,9 @@
+__pycache__/
+*.egg-info/
+*.pyc
+glyphcast-preview*.png
+result
+result-*
+.venv/
+.pytest_cache/
+.diag/
