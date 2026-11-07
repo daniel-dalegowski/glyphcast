@@ -164,46 +164,62 @@ def _draw_glyph_icon(draw: ImageDraw.ImageDraw, x0: int, y0: int, size: int, cel
                 draw.text((cx, cy), ch, font=icon_font, fill=ink, anchor="mm")
 
 
-def build_overlay(base: Image.Image, weather: WeatherNow, condition: Condition, config) -> Image.Image:
-    img = base.copy()
-    box_w, box_h = config.box_wh
-    pos = placement.find_box_position(
-        img, box_w, box_h, config.placement_mode, config.placement_corner, config.placement_margin
-    )
-    if pos is None:
-        return img
-
-    x0, y0 = pos
-    x0 = min(max(0, x0), max(0, img.width - box_w))
-    y0 = min(max(0, y0), max(0, img.height - box_h))
-
-    draw = ImageDraw.Draw(img)
-    region = img.crop((x0, y0, x0 + box_w, y0 + box_h))
+def _composite_box(img: Image.Image, pos: tuple[int, int, int, int], box_w: int, box_h: int, draw_content) -> None:
+    """Shared boilerplate for build_overlay/build_forecast_overlay: samples
+    the backdrop tone from wherever the box will actually land, renders
+    draw_content (icons/text, at (0, 0)-relative design-size coordinates)
+    onto its own box_w x box_h canvas, downscales that canvas if the
+    placement had to shrink it to fit, and pastes the result in. Rendering
+    at full design size first and resizing down -- rather than redoing the
+    icon/font layout math at a smaller size -- keeps the scaled widget's
+    proportions identical to the unscaled one."""
+    x0, y0, draw_w, draw_h = pos
+    region = img.crop((x0, y0, x0 + draw_w, y0 + draw_h))
     avg_bg = tuple(round(v) for v in ImageStat.Stat(region).mean[:3])
     backdrop = tuple(round(v * BACKDROP_DARKEN) for v in avg_bg)
     ink = FG_LIGHT if _luminance(backdrop) < 128 else FG_DARK
 
-    draw.rectangle([x0, y0, x0 + box_w, y0 + box_h], fill=backdrop)
+    canvas = Image.new("RGB", (box_w, box_h), backdrop)
+    draw_content(ImageDraw.Draw(canvas), ink)
+
+    if (draw_w, draw_h) != (box_w, box_h):
+        canvas = canvas.resize((draw_w, draw_h), Image.Resampling.LANCZOS)
+    img.paste(canvas, (x0, y0))
+
+
+def build_overlay(
+    base: Image.Image, weather: WeatherNow, condition: Condition, config, base_image_path: Path | None = None
+) -> Image.Image:
+    img = base.copy()
+    box_w, box_h = config.box_wh
+    pos = placement.find_box_position(
+        img, box_w, box_h, config.placement_mode, config.placement_corner, config.placement_margin,
+        base_image_path,
+    )
+    if pos is None:
+        return img
 
     font_path = resolve_font_path(config.font)
     icon_size = box_h - 2 * PAD
-    text_x = x0 + PAD * 2 + icon_size
+    text_x = PAD * 2 + icon_size
 
-    if config.style == "glyph":
-        _draw_glyph_icon(draw, x0 + PAD, y0 + PAD, icon_size, config.icon_cell_wh, condition, font_path, ink)
-    else:
-        plain_font = ImageFont.truetype(font_path, icon_size)
-        draw.text((x0 + PAD + icon_size / 2, y0 + box_h / 2), PLAIN_ICONS[condition.kind],
-                   font=plain_font, fill=ink, anchor="mm")
+    def draw_content(draw: ImageDraw.ImageDraw, ink: tuple[int, int, int]) -> None:
+        if config.style == "glyph":
+            _draw_glyph_icon(draw, PAD, PAD, icon_size, config.icon_cell_wh, condition, font_path, ink)
+        else:
+            plain_font = ImageFont.truetype(font_path, icon_size)
+            draw.text((PAD + icon_size / 2, box_h / 2), PLAIN_ICONS[condition.kind],
+                       font=plain_font, fill=ink, anchor="mm")
 
-    text_font = ImageFont.truetype(font_path, config.text_font_size)
-    label_font = ImageFont.truetype(font_path, config.label_font_size)
-    temp_str = format_temp(weather.temp, weather.units)
-    label_str = f"{weather.local_time.strftime('%a').upper()} · {weather.local_time.strftime('%b %d')}"
+        text_font = ImageFont.truetype(font_path, config.text_font_size)
+        label_font = ImageFont.truetype(font_path, config.label_font_size)
+        temp_str = format_temp(weather.temp, weather.units)
+        label_str = f"{weather.local_time.strftime('%a').upper()} · {weather.local_time.strftime('%b %d')}"
 
-    draw.text((text_x, y0 + box_h * 0.40), temp_str, font=text_font, fill=ink, anchor="lm")
-    draw.text((text_x, y0 + box_h * 0.72), label_str, font=label_font, fill=ink, anchor="lm")
+        draw.text((text_x, box_h * 0.40), temp_str, font=text_font, fill=ink, anchor="lm")
+        draw.text((text_x, box_h * 0.72), label_str, font=label_font, fill=ink, anchor="lm")
 
+    _composite_box(img, pos, box_w, box_h, draw_content)
     return img
 
 
@@ -259,40 +275,37 @@ def _draw_forecast_column(draw: ImageDraw.ImageDraw, x0: float, y0: float, col_w
         draw.text((start_x + droplet_w + gap, row_cy), precip_str, font=precip_font, fill=ink, anchor="lm")
 
 
-def build_forecast_overlay(base: Image.Image, forecast: list[ForecastDay], config) -> Image.Image:
+def build_forecast_overlay(
+    base: Image.Image, forecast: list[ForecastDay], config, base_image_path: Path | None = None
+) -> Image.Image:
     img = base.copy()
     box_w, box_h = config.box_wh
     pos = placement.find_box_position(
-        img, box_w, box_h, config.placement_mode, config.placement_corner, config.placement_margin
+        img, box_w, box_h, config.placement_mode, config.placement_corner, config.placement_margin,
+        base_image_path,
     )
     if pos is None:
         return img
-
-    x0, y0 = pos
-    x0 = min(max(0, x0), max(0, img.width - box_w))
-    y0 = min(max(0, y0), max(0, img.height - box_h))
-
-    draw = ImageDraw.Draw(img)
-    region = img.crop((x0, y0, x0 + box_w, y0 + box_h))
-    avg_bg = tuple(round(v) for v in ImageStat.Stat(region).mean[:3])
-    backdrop = tuple(round(v * BACKDROP_DARKEN) for v in avg_bg)
-    ink = FG_LIGHT if _luminance(backdrop) < 128 else FG_DARK
-    draw.rectangle([x0, y0, x0 + box_w, y0 + box_h], fill=backdrop)
 
     font_path = resolve_font_path(config.font)
     n = max(1, len(forecast))
     gap = 6
     col_w = (box_w - 2 * PAD - (n - 1) * gap) / n
-    for i, day in enumerate(forecast):
-        cx0 = x0 + PAD + i * (col_w + gap)
-        _draw_forecast_column(draw, cx0, y0 + PAD, col_w, box_h - 2 * PAD, day, i, config, font_path, ink)
 
+    def draw_content(draw: ImageDraw.ImageDraw, ink: tuple[int, int, int]) -> None:
+        for i, day in enumerate(forecast):
+            cx0 = PAD + i * (col_w + gap)
+            _draw_forecast_column(draw, cx0, PAD, col_w, box_h - 2 * PAD, day, i, config, font_path, ink)
+
+    _composite_box(img, pos, box_w, box_h, draw_content)
     return img
 
 
-def render_variant(base_image_path: Path, build_fn: Callable[[Image.Image], Image.Image], dark: bool) -> bytes:
+def render_variant(
+    base_image_path: Path, build_fn: Callable[[Image.Image, Path], Image.Image], dark: bool
+) -> bytes:
     base = resolve_pristine(base_image_path, dark)
-    overlay = build_fn(base)
+    overlay = build_fn(base, base_image_path)
     buf = io.BytesIO()
     overlay.save(buf, "PNG")
     data = buf.getvalue()

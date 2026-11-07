@@ -57,7 +57,7 @@ def _run_current(config) -> bool:
         compositor.format_temp(w.temp, w.units),
     )
 
-    build_fn = lambda base: compositor.build_overlay(base, w, condition, config)  # noqa: E731
+    build_fn = lambda base, base_path: compositor.build_overlay(base, w, condition, config, base_path)  # noqa: E731
     ok = _render_and_publish(build_fn, config, dark=False)
     if config.has_dark:
         ok = _render_and_publish(build_fn, config, dark=True) and ok
@@ -77,7 +77,7 @@ def _run_forecast(config) -> bool:
 
     log.info("forecast: %s", ", ".join(f"{d.date}=code{d.code}" for d in days))
 
-    build_fn = lambda base: compositor.build_forecast_overlay(base, days, config)  # noqa: E731
+    build_fn = lambda base, base_path: compositor.build_forecast_overlay(base, days, config, base_path)  # noqa: E731
     ok = _render_and_publish(build_fn, config, dark=False)
     if config.has_dark:
         ok = _render_and_publish(build_fn, config, dark=True) and ok
@@ -127,7 +127,7 @@ def mock_forecast(units: str) -> list[ForecastDay]:
 def render_mock_forecast(config, base_path: Path) -> bytes:
     days = mock_forecast(config.units)
     base = Image.open(base_path).convert("RGB")
-    overlay = compositor.build_forecast_overlay(base, days, config)
+    overlay = compositor.build_forecast_overlay(base, days, config, base_path)
     buf = io.BytesIO()
     overlay.save(buf, "PNG")
     return buf.getvalue()
@@ -150,7 +150,7 @@ def render_mock(name: str, config, base_path: Path) -> bytes:
     condition = MOCKS[name]
     w = mock_weather(config.units)
     base = Image.open(base_path).convert("RGB")
-    overlay = compositor.build_overlay(base, w, condition, config)
+    overlay = compositor.build_overlay(base, w, condition, config, base_path)
     buf = io.BytesIO()
     overlay.save(buf, "PNG")
     return buf.getvalue()
